@@ -126,6 +126,12 @@ def check_token_expiry():
     except:
         return False
 
+# Initialize session state
+if 'corrected_errors' not in st.session_state:
+    st.session_state.corrected_errors = set()
+if 'all_corrections_data' not in st.session_state:
+    st.session_state.all_corrections_data = {}
+
 # Load data with progress indicator
 with st.spinner("Loading data from secure repository..."):
     if not check_token_expiry():
@@ -137,10 +143,6 @@ if constraints_df is None or logic_df is None:
     st.error("Could not load data from secure repository")
     st.info("Please check: 1) GitHub token is valid 2) Files exist in private repo 3) Internet connection")
     st.stop()
-
-# Session state to track corrected errors
-if 'corrected_errors' not in st.session_state:
-    st.session_state.corrected_errors = set()
 
 # ADMIN MODE TOGGLE
 is_admin = st.toggle("👨‍💼 Admin Mode", help="Enable to view all collected corrections")
@@ -211,7 +213,7 @@ else:
         enumerator_constraints = constraints_df[constraints_df['username'] == selected_enumerator]
         enumerator_logic = logic_df[logic_df['username'] == selected_enumerator]
         
-        # Remove already corrected errors
+        # Remove already corrected errors from session state
         enumerator_constraints = enumerator_constraints[~enumerator_constraints.apply(
             lambda x: f"constraint_{x['unique_id']}_{x['variable']}" in st.session_state.corrected_errors, axis=1
         )]
@@ -266,6 +268,7 @@ else:
                         # Process constraint errors
                         if len(farmer_constraint_errors) > 0:
                             for index, error in farmer_constraint_errors.iterrows():
+                                error_key = f"constraint_{error['unique_id']}_{error['variable']}"
                                 st.subheader(f"🔒 {error['variable']}")
                                 
                                 # Simple mobile layout
@@ -307,21 +310,31 @@ else:
                                         min_value=min_val,
                                         max_value=max_val,
                                         value=current_value,
-                                        key=f"mobile_constraint_{error['unique_id']}_{error['variable']}",
+                                        key=f"value_{error_key}",
                                         label_visibility="collapsed"
                                     )
                                 
                                 explanation = st.text_area(
                                     "Reason for correction:",
                                     placeholder="Why is this correction needed?",
-                                    key=f"mobile_constraint_explain_{error['unique_id']}_{error['variable']}",
+                                    key=f"explain_{error_key}",
                                     height=80
                                 )
+                                
+                                # Store the correction data
+                                st.session_state.all_corrections_data[error_key] = {
+                                    'error_type': 'constraint',
+                                    'error_data': error,
+                                    'correct_value': correct_value,
+                                    'explanation': explanation
+                                }
+                                
                                 st.markdown("---")
                         
                         # Process logic errors
                         if len(farmer_logic_errors) > 0:
                             for index, discrepancy in farmer_logic_errors.iterrows():
+                                error_key = f"logic_{discrepancy['unique_id']}_{discrepancy['variable']}"
                                 st.subheader(f"📊 {discrepancy['variable']}")
                                 
                                 col1, col2 = st.columns([2, 1])
@@ -341,97 +354,126 @@ else:
                                         min_value=0,
                                         max_value=max_val,
                                         value=farmer_value,
-                                        key=f"mobile_logic_{discrepancy['unique_id']}_{discrepancy['variable']}",
+                                        key=f"value_{error_key}",
                                         label_visibility="collapsed"
                                     )
                                 
                                 explanation = st.text_area(
                                     "Reason for difference:",
                                     placeholder="Why different from system record?",
-                                    key=f"mobile_logic_explain_{discrepancy['unique_id']}_{discrepancy['variable']}",
+                                    key=f"explain_{error_key}",
                                     height=80
                                 )
+                                
+                                # Store the correction data
+                                st.session_state.all_corrections_data[error_key] = {
+                                    'error_type': 'logic',
+                                    'error_data': discrepancy,
+                                    'correct_value': correct_value,
+                                    'explanation': explanation
+                                }
+                                
                                 st.markdown("---")
             
-            # Simple save button at bottom
+            # Simple save button at bottom with validation
             st.markdown("---")
             st.header("💾 Save Your Work")
             
+            # Validation function
+            def validate_all_corrections():
+                total_errors = len(enumerator_constraints) + len(enumerator_logic)
+                completed_corrections = 0
+                missing_explanations = []
+                
+                for error_key, correction_data in st.session_state.all_corrections_data.items():
+                    if correction_data['explanation'] and correction_data['explanation'].strip():
+                        completed_corrections += 1
+                    else:
+                        # Extract variable name for error message
+                        if 'constraint' in error_key:
+                            error_type = "Constraint"
+                            var_name = correction_data['error_data']['variable']
+                        else:
+                            error_type = "Logic" 
+                            var_name = correction_data['error_data']['variable']
+                        missing_explanations.append(f"{error_type} error for {var_name}")
+                
+                return completed_corrections == total_errors, missing_explanations, completed_corrections, total_errors
+            
             if st.button("✅ Save All Corrections", type="primary", use_container_width=True):
+                # Validate all corrections are completed
+                is_valid, missing_list, completed, total = validate_all_corrections()
+                
+                if not is_valid:
+                    st.error(f"❌ Cannot save! Please complete all corrections:")
+                    st.error(f"**Progress:** {completed}/{total} corrections completed")
+                    for missing in missing_list:
+                        st.error(f"• {missing} - Explanation required")
+                    st.stop()
+                
+                # All validations passed, proceed with saving
                 corrections = []
                 
-                # Collect constraint corrections
-                for farmer_id in all_farmers_with_errors:
-                    farmer_errors = enumerator_constraints[enumerator_constraints['unique_id'] == farmer_id]
-                    for index, error in farmer_errors.iterrows():
-                        correct_value = st.session_state.get(f"mobile_constraint_{error['unique_id']}_{error['variable']}")
-                        explanation = st.session_state.get(f"mobile_constraint_explain_{error['unique_id']}_{error['variable']}")
-                        
-                        if correct_value is not None:
-                            correction_record = {
-                                'error_type': 'constraint',
-                                'username': error['username'],
-                                'supervisor': error['supervisor'],
-                                'woreda': error['woreda'],
-                                'kebele': error['kebele'],
-                                'farmer_name': error['farmer_name'],
-                                'phone_no': error['phone_no'],
-                                'subdate': error['subdate'],
-                                'unique_id': error['unique_id'],
-                                'variable': error['variable'],
-                                'original_value': error['value'],
-                                'reference_value': error['constraint'],
-                                'correct_value': correct_value,
-                                'explanation': explanation if explanation else "",
-                                'corrected_by': selected_enumerator,
-                                'correction_date': datetime.now().strftime("%d-%b-%y"),
-                                'correction_timestamp': datetime.now().isoformat()
-                            }
-                            corrections.append(correction_record)
-                            # Mark as corrected
-                            st.session_state.corrected_errors.add(f"constraint_{error['unique_id']}_{error['variable']}")
-                
-                # Collect logic corrections
-                for farmer_id in all_farmers_with_errors:
-                    farmer_discrepancies = enumerator_logic[enumerator_logic['unique_id'] == farmer_id]
-                    for index, discrepancy in farmer_discrepancies.iterrows():
-                        correct_value = st.session_state.get(f"mobile_logic_{discrepancy['unique_id']}_{discrepancy['variable']}")
-                        explanation = st.session_state.get(f"mobile_logic_explain_{discrepancy['unique_id']}_{discrepancy['variable']}")
-                        
-                        if correct_value is not None:
-                            correction_record = {
-                                'error_type': 'logic',
-                                'username': discrepancy['username'],
-                                'supervisor': discrepancy['supervisor'],
-                                'woreda': discrepancy['woreda'],
-                                'kebele': discrepancy['kebele'],
-                                'farmer_name': discrepancy['farmer_name'],
-                                'phone_no': discrepancy['phone_no'],
-                                'subdate': discrepancy['subdate'],
-                                'unique_id': discrepancy['unique_id'],
-                                'variable': discrepancy['variable'],
-                                'original_value': discrepancy['value'],
-                                'reference_value': discrepancy['Troster Value'],
-                                'correct_value': correct_value,
-                                'explanation': explanation if explanation else "",
-                                'corrected_by': selected_enumerator,
-                                'correction_date': datetime.now().strftime("%d-%b-%y"),
-                                'correction_timestamp': datetime.now().isoformat()
-                            }
-                            corrections.append(correction_record)
-                            # Mark as corrected
-                            st.session_state.corrected_errors.add(f"logic_{discrepancy['unique_id']}_{discrepancy['variable']}")
+                for error_key, correction_data in st.session_state.all_corrections_data.items():
+                    error_data = correction_data['error_data']
+                    
+                    if correction_data['error_type'] == 'constraint':
+                        correction_record = {
+                            'error_type': 'constraint',
+                            'username': error_data['username'],
+                            'supervisor': error_data['supervisor'],
+                            'woreda': error_data['woreda'],
+                            'kebele': error_data['kebele'],
+                            'farmer_name': error_data['farmer_name'],
+                            'phone_no': error_data['phone_no'],
+                            'subdate': error_data['subdate'],
+                            'unique_id': error_data['unique_id'],
+                            'variable': error_data['variable'],
+                            'original_value': error_data['value'],
+                            'reference_value': error_data['constraint'],
+                            'correct_value': correction_data['correct_value'],
+                            'explanation': correction_data['explanation'],
+                            'corrected_by': selected_enumerator,
+                            'correction_date': datetime.now().strftime("%d-%b-%y"),
+                            'correction_timestamp': datetime.now().isoformat()
+                        }
+                    else:  # logic error
+                        correction_record = {
+                            'error_type': 'logic',
+                            'username': error_data['username'],
+                            'supervisor': error_data['supervisor'],
+                            'woreda': error_data['woreda'],
+                            'kebele': error_data['kebele'],
+                            'farmer_name': error_data['farmer_name'],
+                            'phone_no': error_data['phone_no'],
+                            'subdate': error_data['subdate'],
+                            'unique_id': error_data['unique_id'],
+                            'variable': error_data['variable'],
+                            'original_value': error_data['value'],
+                            'reference_value': error_data['Troster Value'],
+                            'correct_value': correction_data['correct_value'],
+                            'explanation': correction_data['explanation'],
+                            'corrected_by': selected_enumerator,
+                            'correction_date': datetime.now().strftime("%d-%b-%y"),
+                            'correction_timestamp': datetime.now().isoformat()
+                        }
+                    
+                    corrections.append(correction_record)
+                    # Mark as corrected in session state
+                    st.session_state.corrected_errors.add(error_key)
                 
                 if corrections:
                     corrections_df = pd.DataFrame(corrections)
                     
                     # Save to GitHub
                     if save_corrections_to_github(corrections_df):
-                        st.success(f"✅ Saved {len(corrections)} corrections to secure repository! Errors are now cleared.")
+                        st.success(f"✅ Saved {len(corrections)} corrections to secure repository! All errors are now cleared.")
                         st.balloons()
+                        # Clear the pending corrections
+                        st.session_state.all_corrections_data = {}
+                        st.rerun()
                     else:
                         st.warning("⚠️ Failed to save to repository. Please try again.")
-                        
                 else:
                     st.warning("No corrections found to save.")
 
