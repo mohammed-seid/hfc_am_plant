@@ -636,7 +636,7 @@ def render_admin_dashboard(constraints_df: pd.DataFrame, logic_df: pd.DataFrame,
                 st.download_button("📥 CSV Export", data=existing.to_csv(index=False), file_name=f"corrections_{datetime.now().strftime('%Y%m%d')}.csv", mime='text/csv')
             with c2:
                 output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     existing.to_excel(writer, index=False, sheet_name='Corrections')
                 st.download_button("📥 Excel Export", data=output.getvalue(), file_name=f"corrections_{datetime.now().strftime('%Y%m%d')}.xlsx", mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         else: st.info("No data to export.")
